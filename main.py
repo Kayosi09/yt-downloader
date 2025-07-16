@@ -1,103 +1,71 @@
-from fastapi import FastAPI, UploadFile, File, Form, WebSocket, Depends, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi_login import LoginManager
-import subprocess, asyncio, os, re
+from pydantic import BaseModel, HttpUrl
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+import yt_dlp
+import uuid
+import os
+
+# Rate Limiter
+limiter = Limiter(key_func=get_remote_address)
 
 app = FastAPI()
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+# CORS Config — Change '*' to your frontend domain
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-SECRET = "super-secret"
-manager = LoginManager(SECRET, token_url="/auth/login", use_cookie=True)
-manager.cookie_name = "auth_token"
+DOWNLOAD_DIR = "./downloads"
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-users = {"admin": {"password": "1234"}}
+# Pydantic model for input validation
+class DownloadRequest(BaseModel):
+    url: HttpUrl
+    format_id: str = None
+    cookies: str = None
 
-@manager.user_loader
-def load_user(username: str):
-    return users.get(username)
+@app.post("/api/download")
+@limiter.limit("5/minute")  # 5 requests per minute per IP
+async def download_video(data: DownloadRequest):
+    temp_id = str(uuid.uuid4())
+    output_template = f"{DOWNLOAD_DIR}/{temp_id}-%(title)s.%(ext)s"
 
-@app.post("/auth/login")
-def login(username: str = Form(...), password: str = Form(...)):
-    user = load_user(username)
-    if not user or user["password"] != password:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    access_token = manager.create_access_token(data={"sub": username})
-    response = JSONResponse({"msg": "✅ Login successful"})
-    manager.set_cookie(response, access_token)
-    return response
+    ydl_opts = {
+        'outtmpl': output_template,
+        'format': data.format_id if data.format_id else 'best',
+        'noplaylist': True,
+        'quiet': True,
+    }
 
-@app.post("/api/upload-cookies")
-async def upload_cookies(cookieFile: UploadFile = File(...), user=Depends(manager)):
-    os.makedirs("cookies", exist_ok=True)
-    path = f"cookies/{user['username']}_cookies.txt"
-    with open(path, "wb") as f:
-        f.write(await cookieFile.read())
-    return {"message": "✅ Cookies uploaded"}
+    if data.cookies:
+        with open("cookies.txt", "w") as f:
+            f.write(data.cookies)
+        ydl_opts['cookiefile'] = "cookies.txt"
 
-@app.post("/api/get-formats")
-def get_formats(url: str = Form(...), user=Depends(manager)):
-    cookie_path = f"cookies/{user['username']}_cookies.txt"
-    cmd = ["yt-dlp", "--cookies", cookie_path, "-F", url]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise HTTPException(status_code=400, detail="Format fetch failed.")
-    formats = []
-    for line in result.stdout.splitlines():
-        if re.match(r"^\d+", line):
-            parts = line.split(None, 2)
-            formats.append({
-                "format_id": parts[0],
-                "ext": parts[1],
-                "note": parts[2] if len(parts) > 2 else ""
-            })
-    return {"formats": formats}
-
-@app.websocket("/ws/download")
-async def websocket_download(websocket: WebSocket):
-    await websocket.accept()
     try:
-        data = await websocket.receive_json()
-        url = data["url"]
-        fmt = data["format"]
-        user = data["user"]
-
-        cookie_path = f"cookies/{user}_cookies.txt"
-        os.makedirs("downloads", exist_ok=True)
-
-        cmd = [
-            "yt-dlp",
-            "--cookies", cookie_path,
-            "-f", fmt,
-            "-o", "downloads/%(title)s.%(ext)s",
-            url
-        ]
-
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT
-        )
-
-        async for line in process.stdout:
-            await websocket.send_text(line.decode().strip())
-
-        await websocket.send_text("✅ Download Completed.")
-        await websocket.close()
-
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(data.url, download=True)
+            filename = ydl.prepare_filename(info)
+        clean_filename = filename.replace(DOWNLOAD_DIR + "/", "")
+        return {"status": "success", "file": clean_filename}
     except Exception as e:
-        await websocket.send_text(f"❌ Error: {e}")
-        await websocket.close()
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/download-file/{filename}")
-def download_file(filename: str, user=Depends(manager)):
-    filepath = f"downloads/{filename}"
-    if not os.path.exists(filepath):
-        raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(filepath, filename=filename)
+@app.get("/api/download/{filename}")
+@limiter.limit("20/minute")  # Higher limit for file download
+async def get_download(filename: str):
+    filepath = os.path.join(DOWNLOAD_DIR, filename)
+    if os.path.exists(filepath):
+        return FileResponse(filepath, filename=filename)
+    else:
+        raise HTTPException(status_code=404, detail="File not found.")

@@ -2,82 +2,24 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>1Downloader Instagram Dashboard</title>
-  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
-  <style>
-    body { background: #000; color: #0f0; font-family: monospace; padding: 10px; }
-    input, button, select { background: #222; color: #0f0; border: none; margin: 5px; padding: 5px; }
-    #terminal { background: #000; padding: 10px; border-radius: 5px; overflow: auto; height: 300px; border: 1px solid #0f0; }
-    @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0; } 100% { opacity: 1; } }
-    .cursor { display: inline-block; width: 10px; background: #0f0; animation: blink 1s infinite; }
-  </style>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>1Downloader - Terminal UI</title>
+  <link rel="stylesheet" href="static/style.css">
 </head>
 <body>
 
-<h2>📥 Instagram Terminal Downloader</h2>
+  <h1>🡇 1Downloader - Terminal Mode 🡇</h1>
 
-<form id="loginForm">
-  <input type="text" name="username" placeholder="Username" required>
-  <input type="password" name="password" placeholder="Password" required>
-  <button type="submit">Login</button>
-</form>
+  <input type="text" id="url" placeholder="Enter video URL" oninput="validateURL()">
+  <button id="downloadBtn" onclick="startDownload()" disabled>Download</button>
 
-<form id="cookieForm" enctype="multipart/form-data">
-  <input type="file" name="cookieFile" required>
-  <button type="submit">Upload Cookies</button>
-</form>
+  <div id="status"></div>
+  <div id="download-link"></div>
 
-<input type="text" id="urlInput" placeholder="Instagram URL">
-<button onclick="fetchFormats()">Fetch Formats</button>
-<select id="formatSelect"><option disabled selected>Select Format</option></select>
-<input type="text" id="userInput" placeholder="Your Username">
-<button onclick="startDownload()">Start Download</button>
+  <pre id="terminal" class="terminal">
+<span id="terminal-output">Ready for command...</span><span class="cursor">|</span>
+  </pre>
 
-<pre id="terminal">> Ready... <span class="cursor"></span></pre>
-
-<script>
-$('#loginForm').on('submit', function(e){
-  e.preventDefault();
-  $.post('/auth/login', $(this).serialize())
-    .done(() => alert('✅ Logged in'))
-    .fail(() => alert('❌ Login failed'));
-});
-
-$('#cookieForm').on('submit', function(e){
-  e.preventDefault();
-  const formData = new FormData(this);
-  $.ajax({
-    url: '/api/upload-cookies',
-    method: 'POST',
-    data: formData,
-    processData: false,
-    contentType: false,
-    success: () => alert('✅ Cookies uploaded'),
-    error: () => alert('❌ Cookie upload failed')
-  });
-});
-
-function fetchFormats() {
-  $.post('/api/get-formats', { url: $('#urlInput').val() })
-    .done(data => {
-      $('#formatSelect').empty();
-      data.formats.forEach(f => $('#formatSelect').append(`<option value="${f.format_id}">${f.ext} - ${f.note}</option>`));
-    })
-    .fail(() => alert('❌ Format fetch failed'));
-}
-
-function startDownload() {
-  const ws = new WebSocket(`ws://${location.host}/ws/download`);
-  ws.onopen = () => {
-    ws.send(JSON.stringify({
-      url: $('#urlInput').val(),
-      format: $('#formatSelect').val(),
-      user: $('#userInput').val()
-    }));
-  };
-  ws.onmessage = (e) => $('#terminal').append(e.data + '\n');
-}
-</script>
-
+  <script src="script.js"></script>
 </body>
 </html>

@@ -5,3 +5,7 @@ gunicorn
 yt-dlp
 validators
 eventlet
+fastapi
+uvicorn
+yt-dlp
+slowapi  # For rate limiting
