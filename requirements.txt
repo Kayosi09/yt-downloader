@@ -6,6 +6,13 @@ yt-dlp
 validators
 eventlet
 fastapi
-uvicorn
+uvicorn[standard]
 yt-dlp
 slowapi  # For rate limiting
+aiofiles
+python-multipart
+jinja2
+starlette
+uuid
+pydantic
+gevent>=21.1.2

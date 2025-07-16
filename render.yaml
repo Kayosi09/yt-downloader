@@ -2,20 +2,23 @@ services:
   - type: web
     name: 1downloader-backend
     env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port 10000
     plan: free
-    autoDeploy: true
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn main:app --host 0.0.0.0 --port 10000"
     envVars:
-      - key: SECRET_KEY
-        value: super-secret
-    healthCheckPath: /
-  
-  - type: web
-    name: 1downloader-frontend
-    env: static
-    staticPublishPath: .
-    buildCommand: echo "Frontend Ready"
-    startCommand: echo "Frontend Served"
-    plan: free
+      - key: PORT
+        value: 10000
     autoDeploy: true
+
+  - type: static
+    name: 1downloader-frontend
+    staticPublishPath: ./static
+    buildCommand: ""
+    envVars:
+      - key: API_URL
+        value: https://1downloader-backend.onrender.com/api
+
+  - type: cron
+    name: cleanup-job
+    schedule: "*/5 * * * *"  # Every 5 minutes
+    command: "bash cleanup.sh"
