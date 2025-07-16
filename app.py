@@ -1,87 +1,98 @@
-from flask import Flask, render_template, request, send_file, jsonify, Response
-import yt_dlp
-import uuid
-import os
+from flask import Flask, request, jsonify, send_file
+from flask_socketio import SocketIO, emit
+from flask_cors import CORS
+from yt_dlp import YoutubeDL
 import threading
-import json
+import os
+import uuid
+import validators
 
 app = Flask(__name__)
-DOWNLOAD_FOLDER = 'downloads'
+CORS(app)
+socketio = SocketIO(app, cors_allowed_origins="*")
+
+DOWNLOAD_FOLDER = "downloads"
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
-progress_data = {}
+
 
 @app.route('/')
-def index():
-    return render_template('index.html')
+def home():
+    return jsonify({"status": "API Running"})
 
-@app.route('/get_info', methods=['POST'])
-def get_info():
-    url = request.json.get('url')
+
+@app.route('/get-thumbnail', methods=['POST'])
+def get_thumbnail():
+    url = request.form.get('url')
+    if not url or not validators.url(url):
+        return jsonify({'error': '❗ Invalid URL provided'}), 400
+
     try:
-        with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
+        ydl_opts = {'quiet': True, 'skip_download': True, 'forcejson': True}
+        with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            return jsonify({'title': info.get('title'), 'thumbnail': info.get('thumbnail')})
+            return jsonify({'thumbnail': info.get('thumbnail')})
     except Exception as e:
-        return jsonify({'error': str(e)})
+        return jsonify({'error': f'Failed to fetch thumbnail: {str(e)}'}), 500
 
-@app.route('/download_progress')
-def download_progress():
-    url = request.args.get('url')
-    file_format = request.args.get('format')
+
+@socketio.on('start_download')
+def handle_start_download(data):
+    url = data.get('url')
+    format_choice = data.get('format', 'mp4')
+
+    if not url or not validators.url(url):
+        emit('progress_update', {'progress': 0, 'error': '❗ Invalid URL provided'})
+        return
+
     download_id = str(uuid.uuid4())
-    progress_data[download_id] = {'progress': 0}
+    output_filename = f"{DOWNLOAD_FOLDER}/{download_id}.{format_choice}"
 
-    def download_and_stream():
-        output_file = os.path.join(DOWNLOAD_FOLDER, f"{download_id}.%(ext)s")
-        opts = {
-            'outtmpl': output_file,
-            'format': 'bestaudio/best' if file_format == 'mp3' else 'bestvideo+bestaudio/best',
-            'merge_output_format': file_format,
-            'progress_hooks': [lambda d: update_progress(download_id, d)],
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-            }] if file_format == 'mp3' else []
-        }
+    def progress_hook(d):
+        if d['status'] == 'downloading':
+            percent = d.get('_percent_str', '0%').replace('%', '').strip()
+            try:
+                emit('progress_update', {'progress': float(percent)}, broadcast=False)
+            except:
+                pass
+        elif d['status'] == 'finished':
+            emit('progress_update', {'progress': 100}, broadcast=False)
+            socketio.start_background_task(cleanup_and_notify, output_filename)
+
+    ydl_opts = {
+        'outtmpl': output_filename,
+        'format': 'bestvideo+bestaudio/best' if format_choice == 'mp4' else 'bestaudio/best',
+        'progress_hooks': [progress_hook],
+        'merge_output_format': format_choice,
+        'quiet': True,
+        'noplaylist': True
+    }
+
+    def download_task():
         try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                filename = ydl.prepare_filename(info)
-                final_filename = filename if file_format == 'mp4' else filename.rsplit('.', 1)[0] + '.mp3'
-                progress_data[download_id]['status'] = 'done'
-                progress_data[download_id]['filename'] = final_filename
+            with YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
         except Exception as e:
-            progress_data[download_id]['status'] = 'error'
-            progress_data[download_id]['message'] = str(e)
+            emit('progress_update', {'progress': 0, 'error': f'❗ Download failed: {str(e)}'})
 
-    threading.Thread(target=download_and_stream).start()
+    threading.Thread(target=download_task).start()
 
-    def event_stream():
-        while True:
-            data = progress_data[download_id]
-            yield f"data: {json.dumps(data)}\n\n"
-            if data.get('status') in ['done', 'error']:
-                break
-            import time; time.sleep(1)
 
-    return Response(event_stream(), mimetype='text/event-stream')
+def cleanup_and_notify(filepath):
+    # Simulate serving file or notify completion
+    socketio.sleep(1)
+    # Optionally emit('file_ready', {'filename': os.path.basename(filepath)})
+    socketio.sleep(10)
+    if os.path.exists(filepath):
+        os.remove(filepath)
 
-def update_progress(download_id, d):
-    if d['status'] == 'downloading':
-        total = d.get('total_bytes') or d.get('total_bytes_estimate')
-        downloaded = d.get('downloaded_bytes', 0)
-        percent = int((downloaded / total) * 100) if total else 0
-        progress_data[download_id]['progress'] = percent
 
-@app.route('/download_file')
-def download_file():
-    filename = request.args.get('filename')
-    try:
-        response = send_file(filename, as_attachment=True)
-        threading.Thread(target=lambda: (os.remove(filename) if os.path.exists(filename) else None)).start()
-        return response
-    except Exception as e:
-        return f"Error: {str(e)}"
+@app.route('/download/<filename>')
+def download_file(filename):
+    filepath = os.path.join(DOWNLOAD_FOLDER, filename)
+    if os.path.exists(filepath):
+        return send_file(filepath, as_attachment=True)
+    return jsonify({'error': 'File not found'}), 404
+
 
 if __name__ == '__main__':
-    app.run(debug=True, threaded=True)
+    socketio.run(app, host='0.0.0.0', port=5000, debug=True)

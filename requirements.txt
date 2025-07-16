@@ -1,4 +1,6 @@
-Flask
+flask
+flash-cors
 yt-dlp
 gunicorn
 gevent>=23.9.0
+validators
