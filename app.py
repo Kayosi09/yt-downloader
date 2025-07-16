@@ -1,28 +1,21 @@
-from flask import Flask, render_template, request, send_file
-import yt_dlp
-import os
-import uuid
-
-app = Flask(__name__)
-
-# Ensure download folder exists
-DOWNLOAD_FOLDER = "downloads"
-os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
-
-@app.route('/')
-def index():
-    return render_template('index.html', message='')
-
 @app.route('/download', methods=['POST'])
 def download():
     url = request.form['url']
+    file_format = request.form['format']
     try:
         unique_id = str(uuid.uuid4())
+        ext = 'mp4' if file_format == 'mp4' else 'mp3'
         output_template = os.path.join(DOWNLOAD_FOLDER, f"{unique_id}.%(ext)s")
+
         ydl_opts = {
             'outtmpl': output_template,
-            'format': 'bestvideo+bestaudio/best',
-            'merge_output_format': 'mp4',
+            'format': 'bestaudio/best' if ext == 'mp3' else 'bestvideo+bestaudio/best',
+            'merge_output_format': ext,
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }] if ext == 'mp3' else []
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -32,8 +25,3 @@ def download():
         return send_file(filename, as_attachment=True)
     except Exception as e:
         return render_template('index.html', message=f"Error: {str(e)}")
-
-# Entry point for Gunicorn & development server
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
