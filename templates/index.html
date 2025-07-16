@@ -1,90 +1,130 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" x-data="downloaderApp()" :class="{ 'dark': darkMode }">
 <head>
-    <meta charset="UTF-8">
-    <title>1Downloader</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>🎬 1Downloader</title>
+  
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://unpkg.com/alpinejs"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css"/>
+  <script src="/socket.io/socket.io.js"></script>
+
+  <style>
+    body { transition: background 0.5s, color 0.5s; }
+  </style>
 </head>
-<body>
 
-<div class="container text-center mt-5">
-    <h1 class="mb-4">1Downloader - YouTube Downloader</h1>
+<body class="bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100 min-h-screen flex flex-col items-center justify-center p-6">
 
-    <div id="form-section">
-        <div class="input-group mb-3">
-            <input type="url" id="urlInput" class="form-control" placeholder="Enter YouTube URL" required>
-            <button id="fetchInfoBtn" class="btn btn-primary">Fetch Info</button>
-        </div>
+  <div class="text-center">
+    <h1 class="text-4xl font-bold mb-4 animate__animated animate__fadeInDown">🎬 1Downloader</h1>
 
-        <div id="infoSection" style="display: none;">
-            <img id="thumbnail" class="img-fluid rounded mb-3" style="max-width: 300px;">
-            <h5 id="title"></h5>
+    <!-- Dark Mode Toggle -->
+    <button @click="toggleDarkMode()" class="mb-5 px-4 py-2 bg-indigo-600 text-white rounded shadow hover:bg-indigo-700 transition">
+      Toggle Dark Mode
+    </button>
 
-            <div class="input-group mb-3">
-                <select id="formatSelect" class="form-select">
-                    <option value="mp4">MP4 (Video)</option>
-                    <option value="mp3">MP3 (Audio)</option>
-                </select>
-                <button id="downloadBtn" class="btn btn-success">Download</button>
-            </div>
-        </div>
-
-        <div class="progress" style="height: 20px; display: none;" id="progressBarContainer">
-            <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated" 
-                 role="progressbar" style="width: 0%;">0%</div>
-        </div>
-
-        <div id="statusMessage" class="mt-3"></div>
+    <!-- URL Input & Format Selector -->
+    <div class="flex flex-col md:flex-row items-center gap-3 mb-4 animate__animated animate__fadeIn">
+      <input x-model="videoUrl" type="url" placeholder="Paste YouTube video link..." class="border rounded px-4 py-2 w-72">
+      <select x-model="selectedFormat" class="border rounded px-4 py-2">
+        <option value="mp4">MP4</option>
+        <option value="mp3">MP3</option>
+        <option value="webm">WebM</option>
+      </select>
+      <button @click="fetchThumbnail()" class="px-4 py-2 bg-green-500 text-white rounded shadow hover:bg-green-600 transition">
+        Get Preview
+      </button>
     </div>
-</div>
+
+    <!-- Thumbnail Preview -->
+    <div x-show="thumbnail" class="mb-4 animate__animated animate__fadeIn">
+      <img :src="thumbnail" class="mx-auto rounded shadow-lg w-72">
+    </div>
+
+    <!-- Download Button -->
+    <button @click="startDownload()" :disabled="!thumbnail || downloading" class="px-6 py-2 bg-blue-500 text-white rounded shadow hover:bg-blue-600 transition disabled:opacity-50">
+      <span x-show="!downloading">⬇️ Download</span>
+      <span x-show="downloading" class="animate-spin">⏳ Downloading...</span>
+    </button>
+
+    <!-- Progress Bar -->
+    <div class="w-72 bg-gray-300 dark:bg-gray-600 rounded-full h-4 mt-4 mx-auto overflow-hidden">
+      <div class="bg-green-500 h-4 transition-all duration-300" :style="`width: ${progress}%`"></div>
+    </div>
+  </div>
+
+  <!-- Toast Notification -->
+  <div x-show="toastMessage" class="fixed bottom-5 right-5 bg-green-500 text-white px-4 py-2 rounded shadow animate__animated animate__fadeIn" x-text="toastMessage" x-transition></div>
 
 <script>
-document.getElementById('fetchInfoBtn').onclick = function() {
-    const url = document.getElementById('urlInput').value;
-    fetch('/get_info', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url })
-    })
-    .then(res => res.json())
-    .then(data => {
-        if (data.error) {
-            document.getElementById('statusMessage').innerHTML = '<div class="alert alert-danger">' + data.error + '</div>';
-        } else {
-            document.getElementById('thumbnail').src = data.thumbnail;
-            document.getElementById('title').innerText = data.title;
-            document.getElementById('infoSection').style.display = 'block';
-            document.getElementById('statusMessage').innerHTML = '';
-        }
-    });
-};
+  function downloaderApp() {
+    return {
+      darkMode: false,
+      videoUrl: '',
+      selectedFormat: 'mp4',
+      thumbnail: '',
+      downloading: false,
+      progress: 0,
+      toastMessage: '',
+      socket: null,
 
-document.getElementById('downloadBtn').onclick = function() {
-    const url = document.getElementById('urlInput').value;
-    const format = document.getElementById('formatSelect').value;
-    document.getElementById('progressBarContainer').style.display = 'block';
-    document.getElementById('progressBar').style.width = '0%';
-    document.getElementById('progressBar').innerText = '0%';
+      toggleDarkMode() {
+        this.darkMode = !this.darkMode;
+      },
 
-    const eventSource = new EventSource(`/download_progress?url=${encodeURIComponent(url)}&format=${format}`);
-    eventSource.onmessage = function(e) {
-        const data = JSON.parse(e.data);
-        if (data.progress) {
-            document.getElementById('progressBar').style.width = data.progress + '%';
-            document.getElementById('progressBar').innerText = data.progress + '%';
+      showToast(message) {
+        this.toastMessage = message;
+        setTimeout(() => this.toastMessage = '', 3000);
+      },
+
+      fetchThumbnail() {
+        if (!this.videoUrl.trim()) {
+          this.showToast('❗ Enter a valid URL');
+          return;
         }
-        if (data.status === 'done') {
-            eventSource.close();
-            window.location.href = `/download_file?filename=${data.filename}`;
+
+        fetch('/get-thumbnail', {
+          method: 'POST',
+          body: new URLSearchParams({ url: this.videoUrl })
+        })
+        .then(res => res.json())
+        .then(data => {
+          this.thumbnail = data.thumbnail;
+          this.showToast('✅ Thumbnail Loaded!');
+        })
+        .catch(() => this.showToast('❗ Failed to fetch thumbnail'));
+      },
+
+      startDownload() {
+        if (!this.thumbnail) {
+          this.showToast('❗ Please fetch thumbnail first');
+          return;
         }
-        if (data.status === 'error') {
-            eventSource.close();
-            document.getElementById('statusMessage').innerHTML = '<div class="alert alert-danger">' + data.message + '</div>';
+
+        this.downloading = true;
+        this.progress = 0;
+
+        if (!this.socket) {
+          this.socket = io();
+          this.socket.on('progress_update', data => {
+            this.progress = data.progress;
+            if (data.progress >= 100) {
+              this.downloading = false;
+              this.showToast('✅ Download Complete!');
+            }
+          });
         }
-    };
-};
+
+        this.socket.emit('start_download', {
+          url: this.videoUrl,
+          format: this.selectedFormat
+        });
+      }
+    }
+  }
 </script>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
