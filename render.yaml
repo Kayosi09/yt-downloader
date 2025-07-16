@@ -1,15 +1,21 @@
 services:
   - type: web
-    name: youtube-downloader-backend
+    name: 1downloader-backend
     env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port 10000
     plan: free
-    buildCommand: |
-      pip install -r requirements.txt
-    startCommand: |
-      gunicorn app:app --worker-class eventlet -w 1 --bind 0.0.0.0:10000
+    autoDeploy: true
     envVars:
-      - key: FLASK_ENV
-        value: production
-      - key: PORT
-        value: 10000
-    autodeploy: true
+      - key: SECRET_KEY
+        value: super-secret
+    healthCheckPath: /
+  
+  - type: web
+    name: 1downloader-frontend
+    env: static
+    staticPublishPath: .
+    buildCommand: echo "Frontend Ready"
+    startCommand: echo "Frontend Served"
+    plan: free
+    autoDeploy: true

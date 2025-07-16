@@ -1,129 +1,82 @@
 <!DOCTYPE html>
-<html lang="en" x-data="downloaderApp()" :class="{ 'dark': darkMode }">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>🎬 1Downloader</title>
-  
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script defer src="https://unpkg.com/alpinejs"></script>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css"/>
-  <script src="/socket.io/socket.io.js"></script>
-
+  <title>1Downloader Instagram Dashboard</title>
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
   <style>
-    body { transition: background 0.5s, color 0.5s; }
+    body { background: #000; color: #0f0; font-family: monospace; padding: 10px; }
+    input, button, select { background: #222; color: #0f0; border: none; margin: 5px; padding: 5px; }
+    #terminal { background: #000; padding: 10px; border-radius: 5px; overflow: auto; height: 300px; border: 1px solid #0f0; }
+    @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0; } 100% { opacity: 1; } }
+    .cursor { display: inline-block; width: 10px; background: #0f0; animation: blink 1s infinite; }
   </style>
 </head>
+<body>
 
-<body class="bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100 min-h-screen flex flex-col items-center justify-center p-6">
+<h2>📥 Instagram Terminal Downloader</h2>
 
-  <div class="text-center">
-    <h1 class="text-4xl font-bold mb-4 animate__animated animate__fadeInDown">🎬 1Downloader</h1>
+<form id="loginForm">
+  <input type="text" name="username" placeholder="Username" required>
+  <input type="password" name="password" placeholder="Password" required>
+  <button type="submit">Login</button>
+</form>
 
-    <!-- Dark Mode Toggle -->
-    <button @click="toggleDarkMode()" class="mb-5 px-4 py-2 bg-indigo-600 text-white rounded shadow hover:bg-indigo-700 transition">
-      Toggle Dark Mode
-    </button>
+<form id="cookieForm" enctype="multipart/form-data">
+  <input type="file" name="cookieFile" required>
+  <button type="submit">Upload Cookies</button>
+</form>
 
-    <!-- URL Input & Format Selector -->
-    <div class="flex flex-col md:flex-row items-center gap-3 mb-4 animate__animated animate__fadeIn">
-      <input x-model="videoUrl" type="url" placeholder="Paste YouTube video link..." class="border rounded px-4 py-2 w-72">
-      <select x-model="selectedFormat" class="border rounded px-4 py-2">
-        <option value="mp4">MP4</option>
-        <option value="mp3">MP3</option>
-        <option value="webm">WebM</option>
-      </select>
-      <button @click="fetchThumbnail()" class="px-4 py-2 bg-green-500 text-white rounded shadow hover:bg-green-600 transition">
-        Get Preview
-      </button>
-    </div>
+<input type="text" id="urlInput" placeholder="Instagram URL">
+<button onclick="fetchFormats()">Fetch Formats</button>
+<select id="formatSelect"><option disabled selected>Select Format</option></select>
+<input type="text" id="userInput" placeholder="Your Username">
+<button onclick="startDownload()">Start Download</button>
 
-    <!-- Thumbnail Preview -->
-    <div x-show="thumbnail" class="mb-4 animate__animated animate__fadeIn">
-      <img :src="thumbnail" class="mx-auto rounded shadow-lg w-72">
-    </div>
-
-    <!-- Download Button -->
-    <button @click="startDownload()" :disabled="!thumbnail || downloading" class="px-6 py-2 bg-blue-500 text-white rounded shadow hover:bg-blue-600 transition disabled:opacity-50">
-      <span x-show="!downloading">⬇️ Download</span>
-      <span x-show="downloading" class="animate-spin">⏳ Downloading...</span>
-    </button>
-
-    <!-- Progress Bar -->
-    <div class="w-72 bg-gray-300 dark:bg-gray-600 rounded-full h-4 mt-4 mx-auto overflow-hidden">
-      <div class="bg-green-500 h-4 transition-all duration-300" :style="`width: ${progress}%`"></div>
-    </div>
-  </div>
-
-  <!-- Toast Notification -->
-  <div x-show="toastMessage" class="fixed bottom-5 right-5 bg-green-500 text-white px-4 py-2 rounded shadow animate__animated animate__fadeIn" x-text="toastMessage" x-transition></div>
+<pre id="terminal">> Ready... <span class="cursor"></span></pre>
 
 <script>
-  function downloaderApp() {
-    return {
-      darkMode: false,
-      videoUrl: '',
-      selectedFormat: 'mp4',
-      thumbnail: '',
-      downloading: false,
-      progress: 0,
-      toastMessage: '',
-      socket: null,
+$('#loginForm').on('submit', function(e){
+  e.preventDefault();
+  $.post('/auth/login', $(this).serialize())
+    .done(() => alert('✅ Logged in'))
+    .fail(() => alert('❌ Login failed'));
+});
 
-      toggleDarkMode() {
-        this.darkMode = !this.darkMode;
-      },
+$('#cookieForm').on('submit', function(e){
+  e.preventDefault();
+  const formData = new FormData(this);
+  $.ajax({
+    url: '/api/upload-cookies',
+    method: 'POST',
+    data: formData,
+    processData: false,
+    contentType: false,
+    success: () => alert('✅ Cookies uploaded'),
+    error: () => alert('❌ Cookie upload failed')
+  });
+});
 
-      showToast(message) {
-        this.toastMessage = message;
-        setTimeout(() => this.toastMessage = '', 3000);
-      },
+function fetchFormats() {
+  $.post('/api/get-formats', { url: $('#urlInput').val() })
+    .done(data => {
+      $('#formatSelect').empty();
+      data.formats.forEach(f => $('#formatSelect').append(`<option value="${f.format_id}">${f.ext} - ${f.note}</option>`));
+    })
+    .fail(() => alert('❌ Format fetch failed'));
+}
 
-      fetchThumbnail() {
-        if (!this.videoUrl.trim()) {
-          this.showToast('❗ Enter a valid URL');
-          return;
-        }
-
-        fetch('/get-thumbnail', {
-          method: 'POST',
-          body: new URLSearchParams({ url: this.videoUrl })
-        })
-        .then(res => res.json())
-        .then(data => {
-          this.thumbnail = data.thumbnail;
-          this.showToast('✅ Thumbnail Loaded!');
-        })
-        .catch(() => this.showToast('❗ Failed to fetch thumbnail'));
-      },
-
-      startDownload() {
-        if (!this.thumbnail) {
-          this.showToast('❗ Please fetch thumbnail first');
-          return;
-        }
-
-        this.downloading = true;
-        this.progress = 0;
-
-        if (!this.socket) {
-          this.socket = io();
-          this.socket.on('progress_update', data => {
-            this.progress = data.progress;
-            if (data.progress >= 100) {
-              this.downloading = false;
-              this.showToast('✅ Download Complete!');
-            }
-          });
-        }
-
-        this.socket.emit('start_download', {
-          url: this.videoUrl,
-          format: this.selectedFormat
-        });
-      }
-    }
-  }
+function startDownload() {
+  const ws = new WebSocket(`ws://${location.host}/ws/download`);
+  ws.onopen = () => {
+    ws.send(JSON.stringify({
+      url: $('#urlInput').val(),
+      format: $('#formatSelect').val(),
+      user: $('#userInput').val()
+    }));
+  };
+  ws.onmessage = (e) => $('#terminal').append(e.data + '\n');
+}
 </script>
 
 </body>
