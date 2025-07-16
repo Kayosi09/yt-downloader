@@ -1,71 +1,90 @@
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request, HTTPException, UploadFile, Form
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, HttpUrl
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
-import yt_dlp
-import uuid
+from uuid import uuid4
+from pydantic import BaseModel, HttpUrl
+import subprocess
+import shutil
 import os
 
-# Rate Limiter
-limiter = Limiter(key_func=get_remote_address)
+app = FastAPI(title="1Downloader API")
 
-app = FastAPI()
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
-# CORS Config — Change '*' to your frontend domain
+# === CORS Middleware ===
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  
+    allow_origins=["*"],  # Change to your frontend domain in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-DOWNLOAD_DIR = "./downloads"
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+# === Rate Limiter ===
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(429, _rate_limit_exceeded_handler)
 
-# Pydantic model for input validation
+
+# === Data Model ===
 class DownloadRequest(BaseModel):
     url: HttpUrl
-    format_id: str = None
-    cookies: str = None
+    format: str = "best"
+
+DOWNLOAD_DIR = "downloads"
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+
+# === API Routes ===
 
 @app.post("/api/download")
-@limiter.limit("5/minute")  # 5 requests per minute per IP
-async def download_video(data: DownloadRequest):
-    temp_id = str(uuid.uuid4())
-    output_template = f"{DOWNLOAD_DIR}/{temp_id}-%(title)s.%(ext)s"
-
-    ydl_opts = {
-        'outtmpl': output_template,
-        'format': data.format_id if data.format_id else 'best',
-        'noplaylist': True,
-        'quiet': True,
-    }
-
-    if data.cookies:
-        with open("cookies.txt", "w") as f:
-            f.write(data.cookies)
-        ydl_opts['cookiefile'] = "cookies.txt"
+@limiter.limit("5/minute")
+async def download_video(request: Request, data: DownloadRequest):
+    file_id = str(uuid4())
+    output_path = os.path.join(DOWNLOAD_DIR, f"{file_id}.%(ext)s")
 
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(data.url, download=True)
-            filename = ydl.prepare_filename(info)
-        clean_filename = filename.replace(DOWNLOAD_DIR + "/", "")
-        return {"status": "success", "file": clean_filename}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        cmd = [
+            "yt-dlp",
+            "-f", data.format,
+            "-o", output_path,
+            data.url
+        ]
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError:
+        raise HTTPException(status_code=500, detail="Download failed.")
+
+    # Find the actual downloaded file
+    for file in os.listdir(DOWNLOAD_DIR):
+        if file.startswith(file_id):
+            return {"file": file}
+    
+    raise HTTPException(status_code=404, detail="File not found.")
+
 
 @app.get("/api/download/{filename}")
-@limiter.limit("20/minute")  # Higher limit for file download
-async def get_download(filename: str):
-    filepath = os.path.join(DOWNLOAD_DIR, filename)
-    if os.path.exists(filepath):
-        return FileResponse(filepath, filename=filename)
+async def get_file(filename: str):
+    file_path = os.path.join(DOWNLOAD_DIR, filename)
+    if os.path.exists(file_path):
+        return FileResponse(file_path, filename=filename)
     else:
         raise HTTPException(status_code=404, detail="File not found.")
+
+
+@app.get("/api/status")
+def status():
+    return {"status": "Server running"}
+
+
+# === Cleanup Function (for cron job) ===
+@app.get("/api/cleanup")
+def cleanup():
+    removed = 0
+    for file in os.listdir(DOWNLOAD_DIR):
+        file_path = os.path.join(DOWNLOAD_DIR, file)
+        try:
+            os.remove(file_path)
+            removed += 1
+        except Exception:
+            continue
+    return {"removed_files": removed}
